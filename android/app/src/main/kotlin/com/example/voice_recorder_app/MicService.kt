@@ -8,6 +8,10 @@ import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import java.io.File
+import java.io.IOException
+
+// Константа, що визначає ключ, який використовується в Intent
+private const val EXTRA_FILE_NAME = "fileName"
 
 class MicService : Service() {
 
@@ -21,20 +25,40 @@ class MicService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        Log.d("MicService", "Starting background recording")
+        Log.d("MicService", "Received command to start recording")
 
-        val file = File(externalCacheDir, "background_recording.mp4")
+        // 1. Отримуємо ім'я файлу з Intent, яке було передано з Flutter через MainActivity
+        val fileName = intent?.getStringExtra(EXTRA_FILE_NAME) ?: "background_recording_fallback.mp4"
+        
+        // Визначаємо повний шлях до файлу (використовуємо кеш-директорію)
+        val file = File(externalCacheDir, fileName)
         outputFile = file.absolutePath
+        Log.d("MicService", "Saving recording to: $outputFile")
 
+        // Запуск як Foreground Service
         startForeground(1, buildNotification())
 
-        recorder = MediaRecorder().apply {
-            setAudioSource(MediaRecorder.AudioSource.MIC)
-            setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-            setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-            setOutputFile(outputFile)
-            prepare()
-            start()
+        try {
+            recorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                MediaRecorder(this)
+            } else {
+                @Suppress("DEPRECATION")
+                MediaRecorder()
+            }.apply {
+                setAudioSource(MediaRecorder.AudioSource.MIC)
+                setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+                setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+                setOutputFile(outputFile)
+                prepare()
+                start()
+            }
+            Log.d("MicService", "Recording started successfully.")
+        } catch (e: IOException) {
+            Log.e("MicService", "MediaRecorder preparation failed: ${e.message}")
+            stopSelf() // Зупиняємо сервіс, якщо не вдалося підготувати рекордер
+        } catch (e: IllegalStateException) {
+            Log.e("MicService", "MediaRecorder failed to start: ${e.message}")
+            stopSelf()
         }
 
         return START_STICKY
@@ -43,15 +67,22 @@ class MicService : Service() {
     override fun onDestroy() {
         Log.d("MicService", "Stopping recording")
         recorder?.apply {
-            stop()
+            // Обов'язково викликати stop() перед release()
+            try {
+                stop() 
+            } catch (e: RuntimeException) {
+                Log.e("MicService", "Stop failed: MediaRecorder might not have been started or might have already stopped.")
+            }
             release()
         }
         recorder = null
         super.onDestroy()
+        stopForeground(true) // Очищаємо сповіщення
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    // Решта методів (createNotificationChannel, buildNotification) залишаються без змін
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val serviceChannel = NotificationChannel(
@@ -75,9 +106,10 @@ class MicService : Service() {
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("🎙️ Recording in background")
-            .setContentText("Tap to return to the app")
-            .setSmallIcon(R.mipmap.ic_launcher)
+            .setContentText("Saving to: ${outputFile?.substringAfterLast('/') ?: "..."}")
+            .setSmallIcon(R.mipmap.ic_launcher) // Переконайтеся, що іконка існує
             .setContentIntent(pendingIntent)
+            .setOngoing(true) // Вказує, що це активний фоновий сервіс
             .build()
     }
 }
