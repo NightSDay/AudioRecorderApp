@@ -1,16 +1,21 @@
 import 'package:flutter/services.dart';
 
 class MicService {
-  // Назва каналу має збігатися з назвою в MainActivity.kt
   static const MethodChannel _channel = MethodChannel('com.example.micService');
 
-  /// Запускає фоновий сервіс для запису, передаючи ім'я файлу.
-  static Future<void> startMic({required String fileName}) async {
+  /// Запускає фоновий сервіс для запису, передаючи ім'я файлу та бітрейт.
+  static Future<void> startMic({
+    required String fileName,
+    // Цей параметр 'bitRate' є ключовим і повинен бути тут
+    int bitRate = 128000,
+  }) async {
     try {
-      // Викликаємо нативний метод 'startMic' і передаємо Map з аргументами
-      await _channel.invokeMethod('startMic', {'fileName': fileName});
+      // Передаємо і fileName, і bitRate на нативну сторону
+      await _channel.invokeMethod('startMic', {
+        'fileName': fileName,
+        'bitRate': bitRate,
+      });
     } on PlatformException catch (e) {
-      // Обробка помилок, якщо MethodChannel не може викликати нативний метод
       print("Failed to start mic service: '${e.message}'.");
     }
   }
