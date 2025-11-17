@@ -15,7 +15,7 @@ class MyApp extends StatelessWidget {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       title: 'Audio Recorder',
-      theme: ThemeData(primarySwatch: Colors.blue, useMaterial3: true),
+      theme: ThemeData(primarySwatch: Colors.blue),
       home: const AudioRecorderWidget(),
     );
   }
@@ -33,35 +33,30 @@ class _AudioRecorderWidgetState extends State<AudioRecorderWidget> {
   int secondsElapsed = 0;
   Timer? _timer;
 
-  // 1. Опції бітрейту: [Display Name, Value in bps]
-  // 64000 bps = 64 kbps (низька якість, малий файл)
-  // 128000 bps = 128 kbps (стандартна/хороша якість)
-  // 192000 bps = 192 kbps (висока якість, студійний запис)
-  final List<Map<String, int>> bitRateOptions = const [
-    {'64 kbps (Low)': 64000},
-    {'128 kbps (Good)': 128000},
-    {'192 kbps (High)': 192000},
+  // Параметри запису
+  final List<Map<String, dynamic>> bitRateOptions = [
+    {'label': '192 kbps (High)', 'value': 192000},
+    {'label': '128 kbps (Medium)', 'value': 128000},
+    {'label': '64 kbps (Low)', 'value': 64000},
   ];
+  int _selectedBitRate = 128000;
 
-  // 2. Змінна стану для вибраного бітрейту (за замовчуванням 128 kbps)
-  late int _selectedBitRate;
+  // Параметри автозбереження
+  final List<int> autoSaveOptions = [1, 5, 10, 15, 20, 30, 45, 60]; // Хвилини
+  int _selectedAutoSaveInterval = 10; // 10 хвилин за замовчуванням
 
   @override
   void initState() {
     super.initState();
-    // Ініціалізуємо вибраний бітрейт значенням за замовчуванням
-    _selectedBitRate = bitRateOptions[1].values.first;
     requestPermissions();
-  }
-
-  @override
-  void dispose() {
-    _timer?.cancel();
-    super.dispose();
   }
 
   Future<void> requestPermissions() async {
     await Permission.microphone.request();
+    // Дозвіл на сховище потрібен, але для сучасних Android
+    // достатньо доступу до кешу, якщо не зберігаємо у Завантаженнях.
+    // Залишаємо для сумісності:
+    await Permission.storage.request();
   }
 
   void _startTimer() {
@@ -76,143 +71,140 @@ class _AudioRecorderWidgetState extends State<AudioRecorderWidget> {
     setState(() => secondsElapsed = 0);
   }
 
-  String _generateFileName() {
+  // Генерація імені файлу на момент початку (для першого сегмента) або автозбереження
+  String _generateSegmentFileName() {
     final now = DateTime.now();
-    return 'Rec_${now.year}${now.month.toString().padLeft(2, '0')}'
+    return 'Rec_'
+        '${now.year}${now.month.toString().padLeft(2, '0')}'
         '${now.day.toString().padLeft(2, '0')}_'
-        '${now.hour.toString().padLeft(2, '0')}${now.minute.toString().padLeft(2, '0')}'
+        '${now.hour.toString().padLeft(2, '0')}'
+        '${now.minute.toString().padLeft(2, '0')}'
+        '${now.second.toString().padLeft(2, '0')}.m4a';
+  }
+
+  // Генерація імені файлу на момент натискання STOP (для фінального сегмента)
+  String _generateFinalFileName() {
+    final now = DateTime.now();
+    return 'End_' // Додаємо префікс End_
+        '${now.year}${now.month.toString().padLeft(2, '0')}'
+        '${now.day.toString().padLeft(2, '0')}_'
+        '${now.hour.toString().padLeft(2, '0')}'
+        '${now.minute.toString().padLeft(2, '0')}'
         '${now.second.toString().padLeft(2, '0')}.m4a';
   }
 
   Future<void> startRecording() async {
-    final fileName = _generateFileName();
-
-    // Передаємо вибраний бітрейт
-    await MicService.startMic(fileName: fileName, bitRate: _selectedBitRate);
-
+    final fileName = _generateSegmentFileName();
+    await MicService.startMic(
+      fileName: fileName,
+      bitRate: _selectedBitRate,
+      autoSaveIntervalMinutes: _selectedAutoSaveInterval,
+    );
     setState(() => isRecording = true);
     _startTimer();
   }
 
   Future<void> stopRecording() async {
-    await MicService.stopMic();
-    setState(() => isRecording = false);
+    // 1. Зупиняємо таймер та скидаємо нативний таймер автозбереження
     _stopTimer();
+    await MicService.resetTimer();
+
+    // 2. Генеруємо фінальне ім'я файлу (час закінчення)
+    final finalFileName = _generateFinalFileName();
+
+    // 3. Надсилаємо команду сервісу для зупинки та перейменування
+    await MicService.stopAndSaveFinalSegment(finalFileName: finalFileName);
+
+    setState(() => isRecording = false);
   }
 
-  // Функція для перетворення bps у рядок для відображення
-  String _getBitRateDisplayName(int bitRate) {
-    for (var option in bitRateOptions) {
-      if (option.values.first == bitRate) {
-        return option.keys.first;
-      }
-    }
-    return 'Unknown';
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    String formattedTime =
-        '${(secondsElapsed ~/ 3600)} : ${(secondsElapsed ~/ 60).toString().padLeft(2, '0')}:${(secondsElapsed % 60).toString().padLeft(2, '0')}';
+    // --- FORMATING TIME TO HH:MM:SS ---
+    String formattedTime = // <-- ЦЕЙ РЯДОК
+        '${(secondsElapsed ~/ 3600).toString().padLeft(2, '0')}:'
+        '${((secondsElapsed % 3600) ~/ 60).toString().padLeft(2, '0')}:'
+        '${(secondsElapsed % 60).toString().padLeft(2, '0')}';
+
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('🎙️ Голосовий Запис'),
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-      ),
+      appBar: AppBar(title: const Text('🎙️ Voice Recorder')),
       body: Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            // 3. Меню вибору бітрейту
-            if (!isRecording) ...[
-              const Text(
-                'Виберіть якість запису:',
-                style: TextStyle(fontSize: 16),
-              ),
-              const SizedBox(height: 8),
-              Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 4,
-                ),
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: Colors.blue.shade700, width: 2),
-                ),
-                child: DropdownButtonHideUnderline(
-                  child: DropdownButton<int>(
-                    value: _selectedBitRate,
-                    // Дозволяємо змінювати якість тільки коли запис не йде
-                    onChanged: isRecording
-                        ? null
-                        : (int? newValue) {
-                            if (newValue != null) {
-                              setState(() {
-                                _selectedBitRate = newValue;
-                              });
-                            }
-                          },
-                    items: bitRateOptions.map<DropdownMenuItem<int>>((option) {
-                      return DropdownMenuItem<int>(
-                        value: option.values.first,
-                        child: Text(
-                          option.keys.first,
-                          style: const TextStyle(fontSize: 16),
-                        ),
-                      );
-                    }).toList(),
-                  ),
+            // --- Відображення Таймера ---
+            if (isRecording) ...[
+              Text(
+                'Recording: $formattedTime',
+                style: const TextStyle(
+                  fontSize: 28,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.redAccent,
                 ),
               ),
-              const SizedBox(height: 20),
+              const SizedBox(height: 30),
             ],
 
-            Text(
-              isRecording
-                  ? 'ЗАПИС: ${_getBitRateDisplayName(_selectedBitRate)}'
-                  : 'Готовий до запису',
-              style: TextStyle(
-                fontSize: 24,
-                fontWeight: FontWeight.w600,
-                color: isRecording ? Colors.redAccent : Colors.grey.shade700,
-              ),
+            // --- Меню Вибору Бітрейту ---
+            DropdownButton<int>(
+              value: _selectedBitRate,
+              items: bitRateOptions.map((option) {
+                return DropdownMenuItem<int>(
+                  value: option['value'],
+                  child: Text('Quality: ${option['label']}'),
+                );
+              }).toList(),
+              onChanged: isRecording
+                  ? null
+                  : (int? newValue) {
+                      setState(() {
+                        _selectedBitRate = newValue!;
+                      });
+                    },
             ),
-            const SizedBox(height: 16),
 
-            if (isRecording)
-              Text(
-                formattedTime,
-                style: const TextStyle(
-                  fontSize: 48,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.black87,
-                ),
-              ),
+            // --- Меню Автозбереження ---
+            DropdownButton<int>(
+              value: _selectedAutoSaveInterval,
+              items: autoSaveOptions.map((minutes) {
+                return DropdownMenuItem<int>(
+                  value: minutes,
+                  child: Text('AutoSave: $minutes minutes'),
+                );
+              }).toList(),
+              onChanged: isRecording
+                  ? null
+                  : (int? newValue) {
+                      setState(() {
+                        _selectedAutoSaveInterval = newValue!;
+                      });
+                    },
+            ),
+
             const SizedBox(height: 40),
 
-            // Кнопка Старт/Стоп
+            // --- Кнопка Start/Stop ---
             ElevatedButton.icon(
-              icon: Icon(isRecording ? Icons.stop : Icons.mic_none, size: 30),
-              label: Padding(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 10,
-                  vertical: 8,
-                ),
-                child: Text(
-                  isRecording ? 'ЗУПИНИТИ' : 'ПОЧАТИ ЗАПИС',
-                  style: const TextStyle(fontSize: 18),
-                ),
+              icon: Icon(isRecording ? Icons.stop : Icons.mic, size: 32),
+              label: Text(
+                isRecording ? 'Stop Recording' : 'Start Recording',
+                style: const TextStyle(fontSize: 18),
               ),
               style: ElevatedButton.styleFrom(
-                backgroundColor: isRecording
-                    ? Colors.red.shade700
-                    : Colors.blue.shade700,
-                foregroundColor: Colors.white,
+                backgroundColor: isRecording ? Colors.red : Colors.blue,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 30,
+                  vertical: 15,
+                ),
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(10),
                 ),
-                padding: const EdgeInsets.all(20),
-                elevation: 10,
               ),
               onPressed: isRecording ? stopRecording : startRecording,
             ),
